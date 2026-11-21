@@ -1,0 +1,108 @@
+name: Full Stack Application Deployment Test
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+env:
+  COMPOSE_PROJECT_NAME: myapp
+
+jobs:
+  deploy-and-test:
+    runs-on: self-hosted
+    env:
+      DB_USER: ${{ secrets.DB_USER }}
+      DB_NAME: ${{ secrets.DB_NAME }}
+      APP_PORT: ${{ secrets.APP_PORT }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create .env file from secrets
+        run: |
+          cat > .env << ENVEOF
+          DB_HOST=${{ secrets.DB_HOST }}
+          DB_PORT=${{ secrets.DB_PORT }}
+          DB_NAME=${{ secrets.DB_NAME }}
+          DB_USER=${{ secrets.DB_USER }}
+          DB_PASSWORD=${{ secrets.DB_PASSWORD }}
+          APP_PORT=${{ secrets.APP_PORT }}
+          APP_SECRET=${{ secrets.APP_SECRET }}
+          API_KEY=${{ secrets.API_KEY }}
+          COMPOSE_PROJECT_NAME=${{ env.COMPOSE_PROJECT_NAME }}
+          ENVEOF
+          sed 's/=.*/=***/' .env > .env.masked
+          cat .env.masked
+
+      - name: Deploy with Docker Compose
+        run: |
+          docker compose up -d --build
+          docker compose ps
+
+      - name: Verify containers are running
+        run: |
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:$APP_PORT/health && break
+            sleep 2
+          done
+          docker compose ps
+          RUNNING=$(docker compose ps --status running -q | wc -l)
+          if [ "$RUNNING" -lt 2 ]; then
+            echo "Some containers failed to start"
+            docker compose logs
+            exit 1
+          fi
+
+      - name: Run application tests
+        run: |
+          echo "1. App + DB connectivity"
+          curl -f http://localhost:$APP_PORT/health
+          curl -f http://localhost:$APP_PORT/api/data
+
+          echo "2. Data consistency"
+          DB_COUNT=$(docker compose exec -T db psql -U "$DB_USER" -d "$DB_NAME" -t -A -c "SELECT COUNT(*) FROM items;")
+          WEB_COUNT=$(curl -sf http://localhost:$APP_PORT/api/items/count)
+          echo "DB: $DB_COUNT, WEB: $WEB_COUNT"
+          echo "DB_COUNT=$DB_COUNT" >> $GITHUB_ENV
+          echo "WEB_COUNT=$WEB_COUNT" >> $GITHUB_ENV
+          [ "$DB_COUNT" = "$WEB_COUNT" ]
+
+      - name: Create test report
+        if: always()
+        run: |
+          cat > test-report.md << REPORTEOF
+          # Deployment Test Report
+          - Date: $(date)
+          - Containers: $(docker compose ps --status running -q | wc -l) running
+          - Database records: $DB_COUNT
+          - Web API records: $WEB_COUNT
+          REPORTEOF
+
+      - name: Save Docker logs
+        if: always()
+        run: |
+          docker compose logs > deployment-logs.txt
+          docker images > docker-images.txt
+          docker ps -a > docker-ps.txt
+
+      - name: Upload deployment artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deployment-artifacts
+          path: |
+            .env.masked
+            test-report.md
+          retention-days: 30
+
+      - name: Upload Docker logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-logs
+          path: |
+            deployment-logs.txt
+            docker-images.txt
+            docker-ps.txt
+          retention-days: 30
