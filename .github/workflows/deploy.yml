@@ -43,7 +43,7 @@ jobs:
       - name: Verify containers are running
         run: |
           for i in $(seq 1 30); do
-            curl -sf http://localhost:$APP_PORT/health && break
+            curl -sf http://localhost:$APP_PORT/api/items/count > /dev/null && break
             sleep 2
           done
           docker compose ps

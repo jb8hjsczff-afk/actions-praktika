@@ -6,7 +6,11 @@ const pool = new Pool({
   password: process.env.DB_PASSWORD,
 });
 const app = express();
+const wrap = (fn) => async (req, res) => {
+  try { await fn(req, res); }
+  catch (e) { console.error(e.message); res.status(500).send('db error'); }
+};
 app.get('/health', (_, res) => res.send('ok'));
-app.get('/api/data', async (_, res) => res.json((await pool.query('SELECT * FROM items')).rows));
-app.get('/api/items/count', async (_, res) => res.send((await pool.query('SELECT COUNT(*) FROM items')).rows[0].count));
+app.get('/api/data', wrap(async (_, res) => res.json((await pool.query('SELECT * FROM items')).rows)));
+app.get('/api/items/count', wrap(async (_, res) => res.send((await pool.query('SELECT COUNT(*) FROM items')).rows[0].count)));
 app.listen(3000);
